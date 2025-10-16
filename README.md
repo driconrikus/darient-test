@@ -24,7 +24,7 @@ This repository contains a production-ready deployment configuration for OpenWeb
 
 ### Application URLs
 - **OpenWebUI**: https://devops-ricardovaldez.darienc.com
-  - Username: `admin`
+  - Username: `admin@localhost`
   - Password: `Darient123`
 - **Monitoring Dashboard**: https://devops-monitor-ricardovaldez.darienc.com
   - Grafana: `/grafana` (admin/Darient123)
