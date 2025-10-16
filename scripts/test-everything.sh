@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 SERVER_IP="157.180.80.91"
 DOMAIN_OPENWEBUI="devops-ricardovaldez.darienc.com"
 DOMAIN_MONITORING="devops-monitor-ricardovaldez.darienc.com"
-SSH_KEY="ansible/ssh_key"
+SSH_KEY="${SSH_KEY:-ansible/ssh_key}"
 
 # Test results tracking
 TESTS_PASSED=0

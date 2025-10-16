@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 SERVER_IP="157.180.80.91"
 DOMAIN_OPENWEBUI="devops-ricardovaldez.darienc.com"
 DOMAIN_MONITORING="devops-monitor-ricardovaldez.darienc.com"
-SSH_KEY="ansible/ssh_key"
+SSH_KEY="${SSH_KEY:-ansible/ssh_key}"
 
 echo -e "${GREEN}Starting OpenWebUI + Ollama deployment...${NC}"
 
@@ -48,7 +48,8 @@ echo -e "${YELLOW}Running Ansible deployment...${NC}"
 ansible-playbook -i ansible/inventory ansible/deploy.yml \
     --private-key "$SSH_KEY" \
     --extra-vars "domain_openwebui=$DOMAIN_OPENWEBUI" \
-    --extra-vars "domain_monitoring=$DOMAIN_MONITORING"
+    --extra-vars "domain_monitoring=$DOMAIN_MONITORING" \
+    --extra-vars "ansible_ssh_private_key_file=$SSH_KEY"
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}Error: Ansible deployment failed${NC}"

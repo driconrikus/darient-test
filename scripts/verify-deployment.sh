@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 SERVER_IP="157.180.80.91"
 DOMAIN_OPENWEBUI="devops-ricardovaldez.darienc.com"
 DOMAIN_MONITORING="devops-monitor-ricardovaldez.darienc.com"
-SSH_KEY="ansible/ssh_key"
+SSH_KEY="${SSH_KEY:-ansible/ssh_key}"
 
 echo -e "${GREEN}Starting deployment verification...${NC}"
 
