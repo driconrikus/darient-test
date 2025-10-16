@@ -6,7 +6,7 @@ This repository contains a production-ready deployment configuration for OpenWeb
 
 ### Production Deployment Stack
 - **Kubernetes**: k3s lightweight distribution (v1.28.2)
-- **Ollama**: 2 replicas for high availability with Llama3-8B model
+- **Ollama**: 2 replicas for high availability with Llama3-8B model (Currently, it is set to 1 due to the instance resource limitations)
 - **OpenWebUI**: Web interface with admin authentication
 - **PostgreSQL**: Persistent database for chat history and metadata
 - **Monitoring**: Prometheus + Grafana observability stack
