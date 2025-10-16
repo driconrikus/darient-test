@@ -1,0 +1,85 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openwebui
+  namespace: openwebui
+  labels:
+    app: openwebui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openwebui
+  template:
+    metadata:
+      labels:
+        app: openwebui
+    spec:
+      containers:
+      - name: openwebui
+        image: ghcr.io/open-webui/open-webui:main
+        ports:
+        - containerPort: 8080
+        env:
+        - name: WEBUI_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openwebui-secret
+              key: admin-password
+        - name: OLLAMA_BASE_URL
+          value: "http://ollama-service.ollama.svc.cluster.local:11434"
+        - name: DATABASE_URL
+          value: "postgresql://openwebui:$(POSTGRES_PASSWORD)@postgres-service.database.svc.cluster.local:5432/openwebui"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: postgres-password
+              namespace: database
+        - name: WEBUI_AUTH
+          value: "True"
+        - name: WEBUI_NAME
+          value: "Darient AI Assistant"
+        - name: WEBUI_URL
+          value: "https://devops-ricardovaldez.darienc.com"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        volumeMounts:
+        - name: openwebui-data
+          mountPath: /app/backend/data
+      volumes:
+      - name: openwebui-data
+        emptyDir:
+          sizeLimit: 5Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openwebui-service
+  namespace: openwebui
+spec:
+  selector:
+    app: openwebui
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP

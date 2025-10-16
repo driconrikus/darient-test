@@ -1,0 +1,68 @@
+name: Deploy OpenWebUI + Ollama
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  SERVER_IP: 157.180.80.91
+  DOMAIN_OPENWEBUI: devops-ricardovaldez.darienc.com
+  DOMAIN_MONITORING: devops-monitor-ricardovaldez.darienc.com
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Validate Kubernetes manifests
+      uses: instrumenta/kubeval@master
+      with:
+        files: kubernetes/**/*.yaml
+        
+    - name: Validate Ansible playbook
+      run: |
+        pip install ansible
+        ansible-playbook --syntax-check -i ansible/inventory ansible/deploy.yml
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup SSH
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ env.SERVER_IP }} >> ~/.ssh/known_hosts
+        
+    - name: Install Ansible
+      run: |
+        pip install ansible
+        pip install kubernetes
+        
+    - name: Deploy to server
+      run: |
+        ansible-playbook -i ansible/inventory ansible/deploy.yml \
+          --private-key ~/.ssh/id_rsa \
+          --extra-vars "domain_openwebui=${{ env.DOMAIN_OPENWEBUI }}" \
+          --extra-vars "domain_monitoring=${{ env.DOMAIN_MONITORING }}"
+          
+    - name: Verify deployment
+      run: |
+        ssh -i ~/.ssh/id_rsa root@${{ env.SERVER_IP }} "
+          kubectl get pods -A
+          kubectl get ingress -A
+        "
+        
+    - name: Health check
+      run: |
+        sleep 60
+        curl -f https://${{ env.DOMAIN_OPENWEBUI }} || exit 1
+        curl -f https://${{ env.DOMAIN_MONITORING }}/grafana || exit 1

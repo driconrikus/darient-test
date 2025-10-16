@@ -1,0 +1,7 @@
+[servers]
+darient-server ansible_host=157.180.80.91 ansible_user=root ansible_ssh_private_key_file=ansible/ssh_key ansible_python_interpreter=/usr/bin/python3
+
+[servers:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+domain_openwebui=devops-ricardovaldez.darienc.com
+domain_monitoring=devops-monitor-ricardovaldez.darienc.com

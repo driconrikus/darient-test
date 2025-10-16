@@ -1,0 +1,527 @@
+---
+- name: Deploy OpenWebUI + Ollama on Kubernetes
+  hosts: servers
+  become: yes
+  vars:
+    k3s_version: "v1.28.2+k3s1"
+    openwebui_password: "Darient123"
+    
+  tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+      tags: [system]
+
+    - name: Install required packages
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - unzip
+          - htop
+          - net-tools
+          - ufw
+          - python3-pip
+          - python3-dev
+          - python3-kubernetes
+          - python3-yaml
+        state: present
+      tags: [system]
+
+    - name: Configure firewall
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "22"      # SSH
+        - "80"      # HTTP
+        - "443"     # HTTPS
+        - "6443"    # Kubernetes API
+        - "8080"    # k3s dashboard (temporary)
+      tags: [firewall]
+
+    - name: Install k3s
+      shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ k3s_version }}" sh -s - \
+          --write-kubeconfig-mode 644 \
+          --disable traefik \
+          --disable servicelb
+      tags: [k3s]
+
+    - name: Wait for k3s to be ready
+      wait_for:
+        port: 6443
+        host: localhost
+        timeout: 300
+      tags: [k3s]
+
+    - name: Wait for k3s API to be responsive
+      shell: |
+        timeout 300 bash -c 'until kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes >/dev/null 2>&1; do sleep 5; done'
+      tags: [k3s]
+
+    - name: Install kubectl
+      shell: |
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        chmod +x kubectl
+        mv kubectl /usr/local/bin/
+      tags: [k3s]
+
+    - name: Setup kubectl config
+      shell: |
+        mkdir -p ~/.kube
+        cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+        chmod 600 ~/.kube/config
+        sed -i 's/127.0.0.1/localhost/g' ~/.kube/config
+      tags: [k3s]
+
+    - name: Install Helm
+      shell: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      tags: [helm]
+
+    - name: Add cert-manager Helm repository
+      kubernetes.core.helm_repository:
+        name: jetstack
+        repo_url: https://charts.jetstack.io
+      tags: [cert-manager]
+
+    - name: Install cert-manager
+      kubernetes.core.helm:
+        name: cert-manager
+        chart_ref: jetstack/cert-manager
+        release_namespace: cert-manager
+        create_namespace: true
+        values:
+          installCRDs: true
+        wait: true
+        kubeconfig: ~/.kube/config
+      tags: [cert-manager]
+
+    - name: Add NGINX Ingress Helm repository
+      kubernetes.core.helm_repository:
+        name: ingress-nginx
+        repo_url: https://kubernetes.github.io/ingress-nginx
+      tags: [ingress]
+
+    - name: Install NGINX Ingress Controller
+      kubernetes.core.helm:
+        name: ingress-nginx
+        chart_ref: ingress-nginx/ingress-nginx
+        release_namespace: ingress-nginx
+        create_namespace: true
+        values:
+          controller:
+            service:
+              type: LoadBalancer
+              externalIPs:
+                - "{{ ansible_host }}"
+        wait: true
+        kubeconfig: ~/.kube/config
+      tags: [ingress]
+
+    - name: Create namespaces
+      kubernetes.core.k8s:
+        name: "{{ item }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+        kubeconfig: ~/.kube/config
+      loop:
+        - openwebui
+        - ollama
+        - database
+        - monitoring
+        - secrets
+      tags: [namespaces]
+
+    - name: Create PostgreSQL secret
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: postgres-secret
+            namespace: database
+          type: Opaque
+          data:
+            postgres-password: "{{ openwebui_password | b64encode }}"
+        kubeconfig: ~/.kube/config
+      tags: [secrets]
+
+    - name: Create OpenWebUI secret
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: openwebui-secret
+            namespace: openwebui
+          type: Opaque
+          data:
+            admin-password: "{{ openwebui_password | b64encode }}"
+        kubeconfig: ~/.kube/config
+      tags: [secrets]
+
+    - name: Deploy PostgreSQL
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: postgres-pvc
+            namespace: database
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 10Gi
+        kubeconfig: ~/.kube/config
+      tags: [database]
+
+    - name: Deploy PostgreSQL Service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: postgres
+            namespace: database
+            labels:
+              app: postgres
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: postgres
+            template:
+              metadata:
+                labels:
+                  app: postgres
+              spec:
+                containers:
+                - name: postgres
+                  image: postgres:15-alpine
+                  ports:
+                  - containerPort: 5432
+                  env:
+                  - name: POSTGRES_DB
+                    value: "openwebui"
+                  - name: POSTGRES_USER
+                    value: "openwebui"
+                  - name: POSTGRES_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgres-secret
+                        key: postgres-password
+                  volumeMounts:
+                  - name: postgres-storage
+                    mountPath: /var/lib/postgresql/data
+                  resources:
+                    requests:
+                      memory: "256Mi"
+                      cpu: "100m"
+                    limits:
+                      memory: "512Mi"
+                      cpu: "500m"
+                volumes:
+                - name: postgres-storage
+                  persistentVolumeClaim:
+                    claimName: postgres-pvc
+        kubeconfig: ~/.kube/config
+      tags: [database]
+
+    - name: Deploy PostgreSQL Service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: postgres-service
+            namespace: database
+          spec:
+            selector:
+              app: postgres
+            ports:
+            - port: 5432
+              targetPort: 5432
+            type: ClusterIP
+        kubeconfig: ~/.kube/config
+      tags: [database]
+
+    - name: Deploy Ollama
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ollama
+            namespace: ollama
+            labels:
+              app: ollama
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: ollama
+            template:
+              metadata:
+                labels:
+                  app: ollama
+              spec:
+                containers:
+                - name: ollama
+                  image: ollama/ollama:latest
+                  ports:
+                  - containerPort: 11434
+                  env:
+                  - name: OLLAMA_HOST
+                    value: "0.0.0.0"
+                  - name: OLLAMA_ORIGINS
+                    value: "*"
+                  resources:
+                    requests:
+                      memory: "2Gi"
+                      cpu: "500m"
+                    limits:
+                      memory: "3Gi"
+                      cpu: "2000m"
+                  volumeMounts:
+                  - name: ollama-models
+                    mountPath: /root/.ollama
+                  livenessProbe:
+                    httpGet:
+                      path: /
+                      port: 11434
+                    initialDelaySeconds: 30
+                    periodSeconds: 10
+                  readinessProbe:
+                    httpGet:
+                      path: /
+                      port: 11434
+                    initialDelaySeconds: 10
+                    periodSeconds: 5
+                volumes:
+                - name: ollama-models
+                  emptyDir:
+                    sizeLimit: 20Gi
+                initContainers:
+                - name: download-model
+                  image: ollama/ollama:latest
+                  command: ["/bin/sh"]
+                  args:
+                    - -c
+                    - |
+                      ollama serve &
+                      sleep 10
+                      ollama pull llama3:8b
+                      pkill ollama
+                  volumeMounts:
+                  - name: ollama-models
+                    mountPath: /root/.ollama
+                  resources:
+                    requests:
+                      memory: "2Gi"
+                      cpu: "500m"
+                    limits:
+                      memory: "3Gi"
+                      cpu: "2000m"
+        kubeconfig: ~/.kube/config
+      tags: [ollama]
+
+    - name: Deploy Ollama Service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ollama-service
+            namespace: ollama
+          spec:
+            selector:
+              app: ollama
+            ports:
+            - port: 11434
+              targetPort: 11434
+            type: ClusterIP
+        kubeconfig: ~/.kube/config
+      tags: [ollama]
+
+    - name: Deploy OpenWebUI
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: openwebui
+            namespace: openwebui
+            labels:
+              app: openwebui
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: openwebui
+            template:
+              metadata:
+                labels:
+                  app: openwebui
+              spec:
+                containers:
+                - name: openwebui
+                  image: ghcr.io/open-webui/open-webui:main
+                  ports:
+                  - containerPort: 8080
+                  env:
+                  - name: WEBUI_SECRET_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: openwebui-secret
+                        key: admin-password
+                  - name: OLLAMA_BASE_URL
+                    value: "http://ollama-service.ollama.svc.cluster.local:11434"
+                  - name: DATABASE_URL
+                    value: "postgresql://openwebui:$(POSTGRES_PASSWORD)@postgres-service.database.svc.cluster.local:5432/openwebui"
+                  - name: POSTGRES_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgres-secret
+                        key: postgres-password
+                        namespace: database
+                  - name: WEBUI_AUTH
+                    value: "True"
+                  - name: WEBUI_NAME
+                    value: "Darient AI Assistant"
+                  - name: WEBUI_URL
+                    value: "https://devops-ricardovaldez.darienc.com"
+                  resources:
+                    requests:
+                      memory: "512Mi"
+                      cpu: "200m"
+                    limits:
+                      memory: "1Gi"
+                      cpu: "1000m"
+                  livenessProbe:
+                    httpGet:
+                      path: /
+                      port: 8080
+                    initialDelaySeconds: 30
+                    periodSeconds: 10
+                  readinessProbe:
+                    httpGet:
+                      path: /
+                      port: 8080
+                    initialDelaySeconds: 10
+                    periodSeconds: 5
+                  volumeMounts:
+                  - name: openwebui-data
+                    mountPath: /app/backend/data
+                volumes:
+                - name: openwebui-data
+                  emptyDir:
+                    sizeLimit: 5Gi
+        kubeconfig: ~/.kube/config
+      tags: [openwebui]
+
+    - name: Deploy OpenWebUI Service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: openwebui-service
+            namespace: openwebui
+          spec:
+            selector:
+              app: openwebui
+            ports:
+            - port: 8080
+              targetPort: 8080
+            type: ClusterIP
+        kubeconfig: ~/.kube/config
+      tags: [openwebui]
+
+    - name: Deploy Ingress
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: letsencrypt-prod
+          spec:
+            acme:
+              server: https://acme-v02.api.letsencrypt.org/directory
+              email: admin@darienc.com
+              privateKeySecretRef:
+                name: letsencrypt-prod
+              solvers:
+              - http01:
+                  ingress:
+                    class: nginx
+        kubeconfig: ~/.kube/config
+      tags: [ingress]
+
+    - name: Deploy OpenWebUI Ingress
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: openwebui-ingress
+            namespace: openwebui
+            annotations:
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+              nginx.ingress.kubernetes.io/ssl-redirect: "true"
+              nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+              nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+              nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+              nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+          spec:
+            ingressClassName: nginx
+            tls:
+            - hosts:
+              - devops-ricardovaldez.darienc.com
+              secretName: openwebui-tls
+            rules:
+            - host: devops-ricardovaldez.darienc.com
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: openwebui-service
+                      port:
+                        number: 8080
+        kubeconfig: ~/.kube/config
+      tags: [ingress]
+
+    - name: Wait for deployments to be ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ item }}"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 600
+        kubeconfig: ~/.kube/config
+      loop:
+        - database
+        - ollama
+        - openwebui
+      tags: [verify]
